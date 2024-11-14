@@ -1,4 +1,3 @@
-# %%
 import pygame
 import polars as pl
 import time
@@ -6,11 +5,18 @@ from dataclasses import dataclass
 from itertools import zip_longest
 import numpy as np
 import pygame.freetype
-from themes import OneHalfDark, OneHalfLight
+from themes import onehalfdark, onehalflight, themes
+from widgits import Widget, Window
 
 
-theme = OneHalfDark()
-# theme = OneHalfLight()
+def theme_generator():
+    while True:
+        for theme in themes.values():
+            yield theme
+
+
+theme = onehalfdark
+
 
 @dataclass
 class ViewBox:
@@ -19,12 +25,15 @@ class ViewBox:
     bottom: float
     top: float
 
+    def width(self):
+        return self.right - self.left
+
+    def height(self):
+        return self.top - self.bottom
+
     def move_horizontally(self, shift: float):
         self.left += shift
         self.right += shift
-
-    def width(self):
-        return self.right - self.left
 
     def zoom_horizontally(self, zoom: float):
         center = (self.left + self.right) / 2
@@ -32,13 +41,15 @@ class ViewBox:
         self.left = center - range_half
         self.right = center + range_half
 
+
 def compute_grid_lines(view_box: ViewBox):
     """Compute nice grid line intervals for the x and y axes."""
+
     def nice_interval(range_value):
         """Find a good interval for grid lines based on the range."""
         raw_interval = range_value / 10  # Start with roughly 10 grid lines
         exponent = np.floor(np.log10(raw_interval))
-        base_interval = 10 ** exponent
+        base_interval = 10**exponent
 
         # Choose a "nice" factor (1, 2, 5, 10, etc.)
         for factor in [1, 2, 5, 10]:
@@ -69,187 +80,210 @@ def compute_grid_lines(view_box: ViewBox):
     return x_lines[1:], y_lines[1:]
 
 
-class PlottingEngine:
-    def __init__(self, width, height, df: pl.DataFrame, y_columns, grid=True):
-        pygame.init()
-        self.WIDTH = width
-        self.HEIGHT = height
+class LinePlot(Widget):
+    def __init__(
+        self, df: pl.DataFrame, x_axis="time", y_columns=None, grid=True, legend=True
+    ):
         self.df = df
-        self.y_columns = y_columns
-        self.grid=grid
-        self.font = pygame.font.SysFont('firacodenerdfont', 10)
+        self.x_axis = x_axis
+        self.y_columns = y_columns or list(set(df.columns) - {x_axis})
+        self.grid = grid
+        self.legend = legend
+        self.font = pygame.font.SysFont("firacodenerdfont", 10)
 
         self.view_box = ViewBox(
-            df["time"].min(),
-            df["time"].max(),
-            df.select([pl.col(col) for col in self.y_columns]).min().min_horizontal().item(),
-            df.select([pl.col(col) for col in self.y_columns]).max().max_horizontal().item(),
+            df[self.x_axis].min(),
+            df[self.x_axis].max(),
+            df.select([pl.col(col) for col in self.y_columns])
+            .min()
+            .min_horizontal()
+            .item(),
+            df.select([pl.col(col) for col in self.y_columns])
+            .max()
+            .max_horizontal()
+            .item(),
         )
 
-        self.screen = pygame.display.set_mode((self.WIDTH + 100, self.HEIGHT + 100))
-        self.plot = pygame.Surface((self.WIDTH, self.HEIGHT))
+    def with_view(self, view_box: ViewBox):
+        self.view_box = view_box
+        return self
 
     def lerp(self, x0, x1, y0, y1, x):
         return (x - x0) / (x1 - x0) * (y1 - y0) + y0
-    
-    def map_x_to_pixel(self, x):
-        x = self.lerp(self.view_box.left, self.view_box.right, 0, self.WIDTH, x)
+
+    def map_x_to_pixel(self, x, width):
+        x = self.lerp(self.view_box.left, self.view_box.right, 0, width, x)
         if isinstance(x, pl.Expr):
             return x.cast(pl.Int32)
         return int(x)
-    
-    def map_y_to_pixel(self, y):
-        y = self.lerp(self.view_box.top, self.view_box.bottom, 0, self.HEIGHT, y)
+
+    def map_y_to_pixel(self, y, height):
+        y = self.lerp(self.view_box.top, self.view_box.bottom, 0, height, y)
         if isinstance(y, pl.Expr):
             return y.cast(pl.Int32)
         return int(y)
 
-    def map_to_pixel(self):
-        """Map data coordinates to pixel coordinates for all y-columns."""
+    def map_to_pixel(self, width, height):
         df = self.df.filter(
-            pl.col("time").is_between(self.view_box.left, self.view_box.right)
+            pl.col(self.x_axis).is_between(self.view_box.left, self.view_box.right)
         )
 
-        # Map x (time) to pixel coordinates
         df = df.with_columns(
-            self.map_x_to_pixel(pl.col("time")).alias("time")
-        #     (
-        #         (pl.col("time") - self.view_box.left)
-        #         / self.view_box.width()
-        #         * self.WIDTH + 1
-        #     ).cast(pl.Int32).alias("time")
+            (self.map_x_to_pixel(pl.col(self.x_axis), width)).alias(self.x_axis)
         )
-        df = df.group_by("time").mean().sort("time")
+        df = df.group_by(self.x_axis).mean().sort(self.x_axis)
 
-        # Map y-columns to pixel coordinates
         for y_col in self.y_columns:
             df = df.with_columns(
-                (
-                    self.HEIGHT
-                    - (
-                        (pl.col(y_col) - self.view_box.bottom)
-                        / (self.view_box.top - self.view_box.bottom)
-                        * self.HEIGHT
-                    )
-                ).cast(pl.Int32).alias(y_col)
+                (self.map_y_to_pixel(pl.col(y_col), height)).cast(pl.Int32).alias(y_col)
             )
 
         return df
-    
-    def render_legend(self):
-        for i, col in enumerate(self.y_columns):
-            left = 50 + self.WIDTH + 5
-            top = 30 + i * 15
-            color = theme.COLORS[i % len(theme.COLORS)]
-            pygame.draw.rect(
-                self.screen,
-                color.rgb(),
-                pygame.Rect(left, top, 10, 10),
-            )
-            self.screen.blit(self.font.render(col, True, theme.BACKGROUND.rgb()), (left + 15, top))
 
-    def update_plot(self):
-        self.screen.fill(theme.FOREGROUND.rgb())
-        self.plot.fill(theme.BACKGROUND.rgb())
-        self.render_legend()
-        pixel_df = self.map_to_pixel()
-        text_surfaces = []
+    def render_legend(self, surface: pygame.Surface):
+        rect = surface.get_rect()
+        for i, col in enumerate(self.y_columns):
+            left = rect.right - 50
+            top = 30 + i * 15
+            color = theme.accents[i]
+            pygame.draw.rect(surface, color.rgb(), pygame.Rect(left, top, 10, 10))
+            surface.blit(self.font.render(col, True, theme.fg0.rgb()), (left + 15, top))
+
+    def render(self, surface: pygame.Surface):
+        width, height = surface.get_size()
+        margin = 50
+        surface.fill(theme.bg0.rgb())
+        inner_surface = pygame.Surface((width - 2 * margin, height - 2 * margin))
+        inner_surface.fill(theme.bg1.rgb())
+
+        if True:  # border
+            pygame.draw.rect(
+                inner_surface, theme.fg0.rgb(), inner_surface.get_rect(), 1
+            )
 
         if self.grid:
+            v_lines, h_lines = compute_grid_lines(self.view_box)
 
-            x_lines, y_lines = compute_grid_lines(self.view_box)
+            for x in v_lines:
+                timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(x / 1e6))
+                x_pixel = self.map_x_to_pixel(x, width)
+                pygame.draw.line(
+                    inner_surface, theme.fg1.rgb(), (x_pixel, 0), (x_pixel, height)
+                )
+                text_width_px, text_height_px = self.font.size(timestamp)
+                text_surface = self.font.render(
+                    timestamp, True, theme.fg0.rgb(), theme.bg0.rgb()
+                )
+                pos = (
+                    margin + x_pixel + text_height_px,
+                    margin + inner_surface.get_height(),
+                )
+                surface.blit(text_surface, pos)
 
-            # Draw the horizontal and vertical grid lines using pygame
-            for x in x_lines:
-                timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(x / 1e6))
-                x = self.map_x_to_pixel(x)
-                pygame.draw.line(self.plot, theme.FOREGROUND.rgb(), (x, 0), (x, self.HEIGHT))
-                text_surfaces.append((self.font.render(timestamp, True, theme.BACKGROUND.rgb(), theme.FOREGROUND.rgb()), (x + 50 - self.font.size(timestamp)[0] // 2, self.HEIGHT + 50)))
+            for y in h_lines:
+                value = f"{y}"
+                y_pixel = self.map_y_to_pixel(y, height)
+                pygame.draw.line(
+                    inner_surface, theme.fg1.rgb(), (0, y_pixel), (width, y_pixel)
+                )
+                text_width_px, text_height_px = self.font.size(value)
+                text_surface = self.font.render(
+                    value, True, theme.fg0.rgb(), theme.bg0.rgb()
+                )
+                pos = (margin - text_width_px, margin + y_pixel)
+                surface.blit(text_surface, pos)
 
-            for y in y_lines:
-                value = y
-                y = self.map_y_to_pixel(y)
-                pygame.draw.line(self.plot, theme.FOREGROUND.rgb(), (0, y), (self.WIDTH, y))
-                text_surfaces.append((self.font.render(f"{value}", True, theme.BACKGROUND.rgb(), theme.FOREGROUND.rgb()), (0, y + 45)))
-
+        pixel_df = self.map_to_pixel(*inner_surface.get_size())
 
         for i, col in enumerate(self.y_columns):
-            color = theme.COLORS[i%len(theme.COLORS)]
-            data = pixel_df.select(["time", col]).to_numpy()
+            color = theme.accents[i]
+            data = pixel_df.select([self.x_axis, col]).to_numpy()
             if len(data) < 2:
                 continue
-            pygame.draw.aalines(
-                self.plot,
-                color.rgb(),
-                False,
-                data,
-                2,
-            )
+            pygame.draw.aalines(inner_surface, color.rgb(), False, data)
 
-        self.screen.blit(self.plot, (50, 50))
-        self.screen.blits(text_surfaces)
-        pygame.display.flip()
+        if self.legend:
+            self.render_legend(inner_surface)
 
-    def run(self):
+        surface.blit(inner_surface, (margin, margin))
 
-        self.update_plot()
-        running = True
-        while running:
-            update = False
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.TEXTINPUT:
-                    if event.text == "h":  # Pan left
-                        self.view_box.move_horizontally(-self.view_box.width() * 0.5)
-                        update = True
-                    elif event.text == "l":  # Pan right
-                        self.view_box.move_horizontally(self.view_box.width() * 0.5)
-                        update = True
-                    elif event.text == "j":  # Zoom in
-                        self.view_box.zoom_horizontally(0.5)
-                        update = True
-                    elif event.text == "k":  # Zoom out
-                        self.view_box.zoom_horizontally(2.0)
-                        update = True
 
-                    # print(f"self.view_box: {self.view_box}")
+class App:
+    def __init__(self, df: pl.DataFrame, x_axis="time"):
+        self.running = True
+        self.df = df
+        self.x_axis = x_axis
 
-                    # Update the plot with the new view
-                    if update:
-                        self.update_plot()
+        self.view_box = ViewBox(
+            df[self.x_axis].min(),
+            df[self.x_axis].max(),
+            df.select([pl.col(col) for col in df.columns if col != x_axis])
+            .min()
+            .min_horizontal()
+            .item(),
+            df.select([pl.col(col) for col in df.columns if col != x_axis])
+            .max()
+            .max_horizontal()
+            .item(),
+        )
 
-            time.sleep(0.001)
+        self.line_plot = LinePlot(df, x_axis=x_axis)
+        self.line_plot.with_view(self.view_box)
 
-        pygame.quit()
+    def run(self, window: Window):
+        cycle_times = []
+        x = 5000  # Number of cycles to average over
+        clock = pygame.time.Clock()
+        clock.tick(100)
+        theme_gen = theme_generator()
+        global theme
+        theme = next(theme_gen)
+
+        while self.running:
+            self.loop_once(window)
+            cycle_time = clock.tick(100)
+            cycle_times.append(cycle_time)
+            if sum(cycle_times) > x:
+                avg_cycle_time = sum(cycle_times) / len(cycle_times)
+                cycle_times.pop(0)
+                print(
+                    f"Avg loop time: {avg_cycle_time:.2f}ms, FPS: {1000 / avg_cycle_time:.2f}"
+                )
+                theme = next(theme_gen)
+                cycle_times = []
+
+    def loop_once(self, window: Window):
+        window.draw(self.draw)
+        self.handle_events()
+
+    def draw(self, surface: pygame.Surface):
+        self.line_plot.render(surface)
+
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+            elif event.type == pygame.TEXTINPUT:
+                if event.text == "h":  # Pan left
+                    self.view_box.move_horizontally(-self.view_box.width() * 0.5)
+                elif event.text == "l":  # Pan right
+                    self.view_box.move_horizontally(self.view_box.width() * 0.5)
+                elif event.text == "j":  # Zoom in
+                    self.view_box.zoom_horizontally(0.5)
+                elif event.text == "k":  # Zoom out
+                    self.view_box.zoom_horizontally(2.0)
+                self.line_plot.with_view(self.view_box)
 
 
 def main():
-    # # Load the data
     df = pl.read_parquet("data.parquet")
     print("df size mb:", df.estimated_size("mb"))
+    window = Window(2000, 1000)
+    window.init()
+    app = App(df)
+    app.run(window)
+    window.quit()
 
-
-    cols = ["AAPL", "GOOG", "META", "TSLA", "AMZN"]
-    PlottingEngine(
-        2000,
-        1000,
-        df,
-        cols,
-    ).run()
-
-
-    # import plotly.graph_objects as go
-
-    # fig = go.Figure()
-    # for col in cols:
-    #     fig.add_trace(go.Scatter(x=df["time"], y=df[col], mode="lines", name=col))
-
-    # fig.update_layout(title="Stock Prices", xaxis_title="Time", yaxis_title="Price")
-    # fig.show()
 
 if __name__ == "__main__":
     main()
-
-# fonts 
-['arial', 'arialblack', 'bahnschrift', 'calibri', 'cambria', 'cambriamath', 'candara', 'comicsansms', 'consolas', 'constantia', 'corbel', 'couriernew', 'ebrima', 'franklingothicmedium', 'gabriola', 'gadugi', 'georgia', 'impact', 'inkfree', 'javanesetext', 'leelawadeeui', 'leelawadeeuisemilight', 'lucidaconsole', 'lucidasans', 'malgungothic', 'malgungothicsemilight', 'microsofthimalaya', 'microsoftjhenghei', 'microsoftjhengheiui', 'microsoftnewtailue', 'microsoftphagspa', 'microsoftsansserif', 'microsofttaile', 'microsoftyahei', 'microsoftyaheiui', 'microsoftyibaiti', 'mingliuextb', 'pmingliuextb', 'mingliuhkscsextb', 'mongolianbaiti', 'msgothic', 'msuigothic', 'mspgothic', 'mvboli', 'myanmartext', 'nirmalaui', 'nirmalauisemilight', 'palatinolinotype', 'sansserifcollection', 'segoefluenticons', 'segoemdl2assets', 'segoeprint', 'segoescript', 'segoeui', 'segoeuiblack', 'segoeuiemoji', 'segoeuihistoric', 'segoeuisemibold', 'segoeuisemilight', 'segoeuisymbol', 'segoeuivariable', 'simsun', 'nsimsun', 'simsunextb', 'sitkatext', 'sylfaen', 'symbol', 'tahoma', 'timesnewroman', 'trebuchetms', 'verdana', 'webdings', 'wingdings', 'yugothic', 'yugothicuisemibold', 'yugothicui', 'yugothicmedium', 'yugothicuiregular', 'yugothicregular', 'yugothicuisemilight', 'holomdl2assets', 'cascadiacoderegular', 'cascadiamonoregular', 'harmonyossansscregular', 'harmonyossansscbold', 'notosansjpregular', 'notosansjpbold', 'firacodenerdfont', 'firacodenerdfontmed', 'firacodenerdfontmono', 'firacodenerdfontmonomed', 'firacodenerdfontmonoreg', 'firacodenerdfontmonoret', 'firacodenerdfontmonosembd', 'firacodenerdfontpropo', 'firacodenerdfontpropomed', 'firacodenerdfontproporeg', 'firacodenerdfontproporet', 'firacodenerdfontproposembd', 'firacodenerdfontreg', 'firacodenerdfontret', 'firacodenerdfontsembd', 'simsunextg']
