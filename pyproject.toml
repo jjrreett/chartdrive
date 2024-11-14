@@ -9,4 +9,5 @@ dependencies = [
     "plotly>=5.24.1",
     "polars>=1.12.0",
     "pygame>=2.6.1",
+    "rich>=13.9.4",
 ]
