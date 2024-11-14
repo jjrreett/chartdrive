@@ -6,10 +6,11 @@ from dataclasses import dataclass
 from itertools import zip_longest
 import numpy as np
 import pygame.freetype
+from themes import OneHalfDark, OneHalfLight
 
 
-WHITE = pygame.Color("white")
-BLACK = pygame.Color("black")
+theme = OneHalfDark()
+# theme = OneHalfLight()
 
 @dataclass
 class ViewBox:
@@ -69,16 +70,6 @@ def compute_grid_lines(view_box: ViewBox):
 
 
 class PlottingEngine:
-    FOREGROUND_COLORS = [
-        (99, 110, 250),
-        (239, 85, 59),
-        (0, 204, 150),
-        (171, 99, 250),
-        (255, 161, 90),
-        (25, 211, 243),
-    ]
-    BACKGROUND = (229, 236, 246)
-
     def __init__(self, width, height, df: pl.DataFrame, y_columns, grid=True):
         pygame.init()
         self.WIDTH = width
@@ -149,17 +140,17 @@ class PlottingEngine:
         for i, col in enumerate(self.y_columns):
             left = 50 + self.WIDTH + 5
             top = 30 + i * 15
-            color = self.FOREGROUND_COLORS[i % len(self.FOREGROUND_COLORS)]
+            color = theme.COLORS[i % len(theme.COLORS)]
             pygame.draw.rect(
                 self.screen,
-                color,
+                color.rgb(),
                 pygame.Rect(left, top, 10, 10),
             )
-            self.screen.blit(self.font.render(col, True, BLACK), (left + 15, top))
+            self.screen.blit(self.font.render(col, True, theme.BACKGROUND.rgb()), (left + 15, top))
 
     def update_plot(self):
-        self.screen.fill(WHITE)
-        self.plot.fill(self.BACKGROUND)
+        self.screen.fill(theme.FOREGROUND.rgb())
+        self.plot.fill(theme.BACKGROUND.rgb())
         self.render_legend()
         pixel_df = self.map_to_pixel()
         text_surfaces = []
@@ -172,24 +163,24 @@ class PlottingEngine:
             for x in x_lines:
                 timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(x / 1e6))
                 x = self.map_x_to_pixel(x)
-                pygame.draw.line(self.plot, WHITE, (x, 0), (x, self.HEIGHT))
-                text_surfaces.append((self.font.render(timestamp, True, BLACK, WHITE), (x + 50 - self.font.size(timestamp)[0] // 2, self.HEIGHT + 50)))
+                pygame.draw.line(self.plot, theme.FOREGROUND.rgb(), (x, 0), (x, self.HEIGHT))
+                text_surfaces.append((self.font.render(timestamp, True, theme.BACKGROUND.rgb(), theme.FOREGROUND.rgb()), (x + 50 - self.font.size(timestamp)[0] // 2, self.HEIGHT + 50)))
 
             for y in y_lines:
                 value = y
                 y = self.map_y_to_pixel(y)
-                pygame.draw.line(self.plot, WHITE, (0, y), (self.WIDTH, y))
-                text_surfaces.append((self.font.render(f"{value}", True, BLACK, WHITE), (0, y + 45)))
+                pygame.draw.line(self.plot, theme.FOREGROUND.rgb(), (0, y), (self.WIDTH, y))
+                text_surfaces.append((self.font.render(f"{value}", True, theme.BACKGROUND.rgb(), theme.FOREGROUND.rgb()), (0, y + 45)))
 
 
         for i, col in enumerate(self.y_columns):
-            color = self.FOREGROUND_COLORS[i%len(self.FOREGROUND_COLORS)]
+            color = theme.COLORS[i%len(theme.COLORS)]
             data = pixel_df.select(["time", col]).to_numpy()
             if len(data) < 2:
                 continue
             pygame.draw.aalines(
                 self.plot,
-                color,
+                color.rgb(),
                 False,
                 data,
                 2,
