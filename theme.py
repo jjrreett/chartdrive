@@ -201,6 +201,18 @@ themes = {
 }
 
 
+WHITE = Color(0xFFFFFF)
+BLACK = Color(0x000000)
+RED = Color(0xFF0000)
+GREEN = Color(0x00FF00)
+BLUE = Color(0x0000FF)
+YELLOW = Color(0xFFFF00)
+MAGENTA = Color(0xFF00FF)
+CYAN = Color(0x00FFFF)
+ORANGE = Color(0xFFA500)
+VIOLET = Color(0xEE82EE)
+
+
 if __name__ == "__main__":
     # Create a theme object
 

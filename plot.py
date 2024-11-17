@@ -2,11 +2,9 @@ import pygame
 import polars as pl
 import time
 from dataclasses import dataclass
-from itertools import zip_longest
 import numpy as np
-import pygame.freetype
-from themes import onehalfdark, onehalflight, themes
-from widgits import Widget, Window
+from theme import onehalfdark, themes
+from widgits import Widget, Window, Block, Paragraph, List
 
 
 def theme_generator():
@@ -103,6 +101,7 @@ class LinePlot(Widget):
             .max_horizontal()
             .item(),
         )
+        self._block = None
 
     def with_view(self, view_box: ViewBox):
         self.view_box = view_box
@@ -149,17 +148,22 @@ class LinePlot(Widget):
             pygame.draw.rect(surface, color.rgb(), pygame.Rect(left, top, 10, 10))
             surface.blit(self.font.render(col, True, theme.fg0.rgb()), (left + 15, top))
 
-    def render(self, surface: pygame.Surface):
-        width, height = surface.get_size()
-        margin = 50
-        surface.fill(theme.bg0.rgb())
-        inner_surface = pygame.Surface((width - 2 * margin, height - 2 * margin))
-        inner_surface.fill(theme.bg1.rgb())
+    def block(self, block: Block):
+        self._block = block
+        return self
 
-        if True:  # border
-            pygame.draw.rect(
-                inner_surface, theme.fg0.rgb(), inner_surface.get_rect(), 1
-            )
+    def render(self, area: pygame.Rect, surface: pygame.Surface):
+        width, height = area.width, area.height
+        margin = 50
+        pygame.draw.rect(surface, theme.bg0.rgb(), area)
+        inner_area = area.inflate(-2 * margin, -2 * margin)
+        if self._block:
+            self._block.render(inner_area, surface)
+            inner_area = self._block.inner(inner_area)
+        pygame.draw.rect(surface, theme.bg1.rgb(), inner_area)
+
+        inner_surface = pygame.Surface(inner_area.size)
+        inner_surface.fill(theme.bg1.rgb())
 
         if self.grid:
             v_lines, h_lines = compute_grid_lines(self.view_box)
@@ -205,7 +209,7 @@ class LinePlot(Widget):
         if self.legend:
             self.render_legend(inner_surface)
 
-        surface.blit(inner_surface, (margin, margin))
+        surface.blit(inner_surface, inner_area.topleft)
 
 
 class App:
@@ -213,6 +217,7 @@ class App:
         self.running = True
         self.df = df
         self.x_axis = x_axis
+        self.theme_popup = False
 
         self.view_box = ViewBox(
             df[self.x_axis].min(),
@@ -230,14 +235,15 @@ class App:
         self.line_plot = LinePlot(df, x_axis=x_axis)
         self.line_plot.with_view(self.view_box)
 
+        self.select = 0
+
+        self.state = "normal"
+
     def run(self, window: Window):
         cycle_times = []
         x = 5000  # Number of cycles to average over
         clock = pygame.time.Clock()
         clock.tick(100)
-        theme_gen = theme_generator()
-        global theme
-        theme = next(theme_gen)
 
         while self.running:
             self.loop_once(window)
@@ -249,7 +255,6 @@ class App:
                 print(
                     f"Avg loop time: {avg_cycle_time:.2f}ms, FPS: {1000 / avg_cycle_time:.2f}"
                 )
-                theme = next(theme_gen)
                 cycle_times = []
 
     def loop_once(self, window: Window):
@@ -257,7 +262,20 @@ class App:
         self.handle_events()
 
     def draw(self, surface: pygame.Surface):
-        self.line_plot.render(surface)
+        area = surface.get_rect()
+        self.line_plot.block(Block(1, theme.bg0, theme.fg1))
+        self.line_plot.render(area, surface)
+        if self.theme_popup:
+            width = 300
+            height = 200
+            left = (surface.get_width() - width) // 2
+            top = (surface.get_height() - height) // 2
+            popup_area = pygame.Rect(left, top, width, height)
+            List(
+                list(themes.keys()), pygame.font.SysFont("firacodenerdfont", 20)
+            ).with_fg(theme.fg0).with_bg(theme.bg0).block(
+                Block(2, theme.bg0, theme.fg1)
+            ).select(self.select).render(popup_area, surface)
 
     def handle_events(self):
         for event in pygame.event.get():
@@ -269,13 +287,31 @@ class App:
                 elif event.text == "l":  # Pan right
                     self.view_box.move_horizontally(self.view_box.width() * 0.5)
                 elif event.text == "j":  # Zoom in
-                    self.view_box.zoom_horizontally(0.5)
+                    if self.theme_popup:
+                        self.select += 1
+                    else:
+                        self.view_box.zoom_horizontally(0.5)
                 elif event.text == "k":  # Zoom out
-                    self.view_box.zoom_horizontally(2.0)
+                    if self.theme_popup:
+                        self.select -= 1
+                    else:
+                        self.view_box.zoom_horizontally(2.0)
+                elif event.text == "t":
+                    self.theme_popup = not self.theme_popup
+                elif event.text == "q":
+                    self.running = False
+                elif event.text == " ":
+                    if self.theme_popup:
+                        self.theme_popup = False
+                        global theme
+                        theme = themes[list(themes.keys())[self.select]]
                 self.line_plot.with_view(self.view_box)
 
 
 def main():
+    import os
+
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
     df = pl.read_parquet("data.parquet")
     print("df size mb:", df.estimated_size("mb"))
     window = Window(2000, 1000)
